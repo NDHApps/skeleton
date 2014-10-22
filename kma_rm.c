@@ -73,7 +73,9 @@ static kma_page_t *store = NULL;
 
 /************Function Prototypes******************************************/
 void init_store();
-void print_header();
+void print_header(header_t*);
+void sort_free_list(header_t*);
+void coalesce(header_t*);
 int comp_pair(const void*, const void*);
 /************External Declaration*****************************************/
 
@@ -82,51 +84,96 @@ int comp_pair(const void*, const void*);
 void*
 kma_malloc(kma_size_t size)
 {
-  if (DEBUG) printf("\n---ALLOCATE %d---\n", size);
+  if (DEBUG) printf("\n     ---ALLOCATE %d---\n", size);
   if (store == NULL)
     init_store();
-  if (DEBUG) print_header();
+  if (DEBUG) print_header(store->ptr);
 
   // search for open spot
   header_t *header = store->ptr;
   int i;
-  pair_t pair;
+  pair_t *pair;
   for(i=0;i<header->len;i++) {
-    pair = header->free_list[i];
-    if (pair.isFree && pair.size >= size) {
-      if (DEBUG) printf("Allocating %d bytes at %d\n", size, pair.base);
-      void* addr = header->start + pair.base;
-      header->free_list[i].base += size;
-      header->free_list[i].size -= size;
-      if (DEBUG) print_header();
+    pair = &header->free_list[i];
+    if (pair->isFree && pair->size >= size) {
+      if (DEBUG) printf("Allocating %d bytes at %d\n", size, pair->base);
+      void* addr = header->start + pair->base;
+      pair->base += size;
+      pair->size -= size;
+      if (DEBUG) print_header(store->ptr);
       return addr;
     }
   }
+  if (DEBUG) printf("Could not find suitable spot to allocate\n");
   return NULL;
 }
 
 void
 kma_free(void* ptr, kma_size_t size)
 {
-  if (DEBUG) printf("\n---FREE %p, %d---\n", ptr, size);
   header_t *header = store->ptr;
-  int base = (int)((ptr - header->start) / (sizeof(void*)));
-  if (DEBUG) printf("Freeing at %d", base);
+  int base = (int)(ptr - header->start);
+  if (DEBUG) printf("\n     ---FREE %d, %d---\n", base, size);
   pair_t new_pair = { .isFree = 1, .base = base, .size = size };
   header->free_list[header->len] = new_pair;
   header->len++;
-  qsort(&header->free_list, header->len, sizeof(pair_t), comp_pair);
-  if (DEBUG) print_header();
+  sort_free_list(header);
+  coalesce(header);
+  if (DEBUG) print_header(store->ptr);
+
+  if (header->len == 1) {
+    if (DEBUG) printf("Freeing Store\n");
+    free_page(store);
+    store = NULL;
+  }
 }
 
-void print_header()
+void sort_free_list(header_t *header)
 {
-  header_t *header = store->ptr;
-  printf("\n###HEADER of %p###\n", store->ptr);
-  printf("SELF: %p\n", header->self);
+  if (DEBUG) printf("Sorting free list\n");
+  qsort(&header->free_list, header->len, sizeof(pair_t), comp_pair);
+}
+
+void coalesce(header_t *header)
+{
+  if (DEBUG) printf("Coalescing free list\n");
+  pair_t *curr, *next, new_pair;
+  int i;
+  int num_coals = 0;
+  for (i=0;i < (header->len -1);i++) {
+    curr = &header->free_list[i];
+    next = &header->free_list[i+1];
+    if (!curr->isFree || !next->isFree) continue;
+
+    if (curr->base + curr->size == next->base) {
+      if (DEBUG) printf("Coalescing <%d,%d> and <%d,%d>\n", curr->base, curr->size,
+                                                            next->base, next->size);
+      next->isFree = 0;
+      // create coalesced pair
+      new_pair.base = curr->base;
+      new_pair.size = curr->size + next->size;
+      header->free_list[i] = new_pair;
+      num_coals++;
+    }
+  }
+
+  sort_free_list(header);
+  header->len -= num_coals;
+  if (num_coals > 0) {
+    if (DEBUG) printf("Coalesced %d pairs, recursing\n", num_coals);
+    coalesce(header);
+  } else {
+    if (DEBUG) printf("No coalesces made\n");
+  }
+}
+
+void print_header(header_t *header)
+{
+  printf("\n----HEADER of %p----\n", store->ptr);
+  //printf("SELF: %p\n", header->self);
   if (header->next) printf("NEXT: %p\n", header->next);
   printf("LEN: %d\n", header->len);
-  printf("START: %p\n", header->start);
+  //printf("START: %p\n", header->start);
   int k;
   pair_t pair;
   printf("FREE LIST:\n");
@@ -142,7 +189,6 @@ void init_store()
   store = get_page();
   void *page = store->ptr;
 
-  if (DEBUG) printf("Initializing header\n");
   header_t info = {
     .self = store,
     .next = NULL,
@@ -151,12 +197,10 @@ void init_store()
   };
 
   int i;
-  if (DEBUG) printf("Initializing base pairs\n");
   pair_t temp = { .isFree = 0, .base = 0, .size = 0 };
   for (i=0;i<PAIR_LIST_LENGTH;i++) {
     info.free_list[i] = temp;
   }
-  if (DEBUG) printf("Initializing first base pair\n");
   info.free_list[0].isFree = 1;
   info.free_list[0].base = 0;
   info.free_list[0].size = PAGESIZE - sizeof(header_t);
@@ -170,8 +214,8 @@ int comp_pair(const void* p1, const void* p2)
   pair_t *pair2 = (pair_t*)p2;
 
   if (!pair1->isFree && !pair2->isFree) return 0;
-  if (!pair1->isFree) return -1;
-  if (!pair2->isFree) return 1;
+  if (!pair1->isFree) return 1;
+  if (!pair2->isFree) return -1;
 
   if (pair1->base > pair2->base) return 1;
   else if (pair1->base < pair2->base) return -1;
