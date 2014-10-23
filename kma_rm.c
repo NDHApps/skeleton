@@ -33,10 +33,13 @@
  ***************************************************************************/
 #ifdef KMA_RM
 #define __KMA_IMPL__
+#define DEBUG 1
 
 /************System include***********************************************/
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 
 /************Private include**********************************************/
 #include "kma_page.h"
@@ -49,10 +52,17 @@
  *  structures and arrays, line everything up in neat columns.
  */
 
+typedef struct _header {
+  int size;
+  void *next;
+} header_t;
+
 /************Global Variables*********************************************/
+static kma_page_t* head = NULL;
 
 /************Function Prototypes******************************************/
-
+void init_page(kma_page_t**);
+void print_free_list();
 /************External Declaration*****************************************/
 
 /**************Implementation***********************************************/
@@ -60,6 +70,37 @@
 void*
 kma_malloc(kma_size_t size)
 {
+  if (head == NULL) init_page(&head);
+  if (DEBUG) {
+    printf("\n    ---ALLOCATE %d---   \n", size);
+    printf("Free list before allocation:\n");
+    print_free_list();
+  }
+  header_t *curr = head->ptr;
+  header_t *prev = NULL;
+  while (curr != NULL) {
+    if (curr->size >= size) {
+      if (DEBUG) printf("Allocating at %p\n", curr);
+      header_t new_header = { .size = curr->size - size - sizeof(header_t),
+                              .next = curr->next };
+      void *loc = memcpy(curr + sizeof(header_t) + size, &new_header, sizeof(header_t));
+
+      if (curr == head->ptr) {
+        head->ptr = loc;
+        if (DEBUG) printf("The head was moved to %p\n", loc);
+      } else if (prev) {
+        prev->next = loc;
+        if (DEBUG) printf("Inserting in the middle of the list\n");
+      }
+      if (DEBUG) {
+        printf("Free list after allocation:\n");
+        print_free_list();
+      }
+      return loc;
+    }
+    prev = curr;
+    curr = curr->next;
+  }
   return NULL;
 }
 
@@ -67,6 +108,28 @@ void
 kma_free(void* ptr, kma_size_t size)
 {
   ;
+}
+
+void
+print_free_list()
+{
+  header_t *curr = head->ptr;
+  while (curr != NULL) {
+    printf("%p - <%d, %p>\n", curr, curr->size, curr->next);
+    curr = curr->next;
+  }
+}
+
+void
+init_page(kma_page_t **page)
+{
+  printf("Initializing page\n");
+  *page = get_page();
+  header_t header = { .size = (PAGESIZE - sizeof(header_t)),
+                      .next = NULL
+                    };
+
+  memcpy((*page)->ptr, &header, sizeof(header_t));
 }
 
 #endif // KMA_RM
