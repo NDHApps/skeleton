@@ -63,6 +63,8 @@ static kma_page_t* head = NULL;
 /************Function Prototypes******************************************/
 void init_page(kma_page_t**);
 void print_free_list();
+void coalesce();
+void attempt_to_free_pages();
 /************External Declaration*****************************************/
 
 /**************Implementation***********************************************/
@@ -70,6 +72,7 @@ void print_free_list();
 void*
 kma_malloc(kma_size_t size)
 {
+  if (size > PAGESIZE - sizeof(header_t)) return NULL;
   if (head == NULL) init_page(&head);
   if (DEBUG) {
     printf("\n    ---ALLOCATE %d---   \n", size);
@@ -79,35 +82,109 @@ kma_malloc(kma_size_t size)
   header_t *curr = head->ptr;
   header_t *prev = NULL;
   while (curr != NULL) {
-    if (curr->size >= size) {
+    if (curr->size > size + sizeof(header_t)) {
       if (DEBUG) printf("Allocating at %p\n", curr);
+      // have to cast to char to ensure bytes are added correctly
+      void *addr = (char*)curr + sizeof(header_t);
       header_t new_header = { .size = curr->size - size - sizeof(header_t),
                               .next = curr->next };
-      void *loc = memcpy(curr + sizeof(header_t) + size, &new_header, sizeof(header_t));
+      assert(new_header.size >= 0);
+      void *dest = (char*)curr + sizeof(header_t) + size;
+      memcpy(dest, &new_header, sizeof(header_t));
 
       if (curr == head->ptr) {
-        head->ptr = loc;
-        if (DEBUG) printf("The head was moved to %p\n", loc);
+        head->ptr = dest;
+        if (DEBUG) printf("The head was moved to %p\n", dest);
       } else if (prev) {
-        prev->next = loc;
+        prev->next = dest;
         if (DEBUG) printf("Inserting in the middle of the list\n");
       }
       if (DEBUG) {
         printf("Free list after allocation:\n");
         print_free_list();
       }
-      return loc;
+      return addr;
     }
     prev = curr;
     curr = curr->next;
   }
-  return NULL;
+  if (DEBUG) printf("Could not find spot for memory, allocating a new page\n");
+  assert(prev->next == NULL);
+  kma_page_t *new_page;
+  init_page(&new_page);
+  header_t *new_header = new_page->ptr;
+  prev->next = new_header;
+  if (DEBUG) { printf("Free list after allocating new page\n"); print_free_list(); }
+  return (char*)new_header + sizeof(header_t);
 }
 
 void
 kma_free(void* ptr, kma_size_t size)
 {
-  ;
+  if (DEBUG) printf("\n    -----FREE %d-----   \n", size);
+  header_t *freed, *curr, *prev;
+  freed = ptr - sizeof(header_t);
+  freed->size = size;
+  if (DEBUG) printf("Freeing: %p - <%d, %p>\n", freed, freed->size, freed->next);
+  curr = head->ptr;
+  while (curr != NULL) {
+    if (freed < curr) {
+      if (DEBUG) printf("Inserting in front of %p\n", curr);
+      if (curr == head->ptr) {
+        if (DEBUG) printf("Reassigning the head!\n");
+        head->ptr = freed;
+        freed->next = curr;
+      } else {
+        if (DEBUG) printf("Inserting in the middle\n");
+        prev->next = freed;
+        freed->next = curr;
+      }
+      if (DEBUG) {
+        printf("Free list after freeing\n");
+        print_free_list();
+      }
+      coalesce();
+      attempt_to_free_pages();
+      return;
+    }
+    prev = curr;
+    curr = curr->next;
+  }
+}
+
+void
+coalesce()
+{
+  if (DEBUG) printf("Coalescing\n");
+  header_t *curr = head->ptr;
+  while (curr->next != NULL)
+  {
+    if ((char*)curr + curr->size + sizeof(header_t) == curr->next) {
+      if (DEBUG) printf("Coalescing %p and %p\n", curr, curr->next);
+      curr->size += ((header_t*)(curr->next))->size + sizeof(header_t);
+      curr->next =  ((header_t*)(curr->next))->next;
+    } else {
+      curr = curr->next;
+    }
+  }
+  if (DEBUG) { printf("Free list after coalescing\n"); print_free_list(); }
+}
+
+void
+attempt_to_free_pages()
+{
+  header_t *curr, *prev;
+  prev = NULL;
+  curr = head->ptr;
+  while (curr != NULL) {
+    if (curr->size == PAGESIZE - sizeof(header_t)) {
+      if (DEBUG) printf("Found an an empty page, attemping to free it.\n");
+      if (curr == head->ptr) {
+        free_page(head);
+      }
+    }
+    curr = curr->next;
+  }
 }
 
 void
