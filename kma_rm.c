@@ -33,7 +33,7 @@
  ***************************************************************************/
 #ifdef KMA_RM
 #define __KMA_IMPL__
-#define DEBUG 1
+#define DEBUG 0
 
 /************System include***********************************************/
 #include <assert.h>
@@ -85,11 +85,6 @@ void move_head(header_t** dest)
 void*
 kma_malloc(kma_size_t size)
 {
-  if (DEBUG) {
-    printf("\n    ---POALLOCATE %d---   \n", size);
-    printf("Free list before allocation:\n");
-    //print_free_list();
-  }
   if (size > PAGESIZE - sizeof(header_t)) return NULL;
   if (entry == NULL) {
     kma_page_t *page = get_page();
@@ -99,6 +94,12 @@ kma_malloc(kma_size_t size)
     if (DEBUG) printf("Initializing entry with first header\n");
     entry = get_page();
     move_head(&head);
+  }
+
+  if (DEBUG) {
+    printf("\n    ---ALLOCATE %d---   \n", size);
+    printf("Free list before allocation:\n");
+    print_free_list();
   }
 
   header_t* head = get_head();
@@ -132,7 +133,7 @@ kma_malloc(kma_size_t size)
       }
       if (DEBUG) {
         printf("Free list after allocation:\n");
-        //print_free_list();
+        print_free_list();
       }
       if (DEBUG) { printf("Checking sanity of list after alloc\n"); check_list(); }
       return addr;
@@ -145,43 +146,65 @@ kma_malloc(kma_size_t size)
   kma_page_t *new_page = get_page();
   init_page(&new_page);
 
-  header_t *new_header = new_page->ptr + sizeof(void*);
-  assert(new_header->size == (PAGESIZE - sizeof(void*) - sizeof(header_t)));
-  prev->next = new_header;
-  if (DEBUG) printf("Trying it again with that new page\n");
-  return kma_malloc(size);
+  void* addr = new_page->ptr + sizeof(void*) + sizeof(header_t);
+  if (DEBUG) printf("Reassinging new header\n");
+  void* dest = new_page->ptr + sizeof(void*) + size + sizeof(header_t);
+  header_t new_header = {
+    .size = (PAGESIZE) - size - sizeof(header_t)*2 - sizeof(void*),
+    .next = NULL
+  };
+  memcpy(dest, &new_header, sizeof(header_t));
+  header_t *newh = (header_t*)dest;
+  prev->next = newh;
+
+  if (DEBUG) {
+    printf("Created a new header at %p, <%d, %p>\n", newh, newh->size, newh->next);
+    printf("Free list after allocation:\n");
+    print_free_list();
+  }
+
+  return addr;
 }
 
 void
 kma_free(void* ptr, kma_size_t size)
 {
-  if (DEBUG) printf("\n   ---FREE %p---   \n", ptr);
+  if (DEBUG) {
+    printf("\n   ---FREE %p, %d---   \n", ptr, size);
+    if (DEBUG) printf("Free list before free\n");
+    print_free_list();
+  }
   header_t *freed, *curr, *prev;
   freed = ptr - sizeof(header_t);
   freed->size = size;
   if (DEBUG) printf("Freeing: %p - <%d, %p>\n", freed, freed->size, freed->next);
   curr = get_head();
   while (curr != NULL) {
-    if (freed < curr) {
-      if (DEBUG) printf("Inserting in front of %p\n", curr);
-      if (curr == get_head()) {
-        if (DEBUG) printf("Reassigning the head!\n");
-        move_head(&freed);
-      } else {
-        if (DEBUG) printf("Inserting in the middle, linking %p to %p\n", prev, freed);
-        assert((void*)prev < (void*)freed);
-        prev->next = freed;
+    if (BASEADDR(freed) == BASEADDR(curr)) {
+      if (freed < curr) {
+        if (DEBUG) printf("Inserting in front of %p\n", curr);
+        if (curr == get_head()) {
+          if (DEBUG) printf("Reassigning the head!\n");
+          move_head(&freed);
+        } else {
+          if (DEBUG) printf("Inserting in the middle, linking %p to %p\n", prev, freed);
+          prev->next = freed;
+        }
+        if (DEBUG) printf("Linking %p to %p\n", freed, curr);
+        freed->next = curr;
+        assert(freed < curr);
+        if (DEBUG) {
+          printf("Free list after freeing\n");
+          print_free_list();
+        }
+        coalesce();
+        attempt_to_free_pages();
+        if (DEBUG && entry) {
+          if (DEBUG) printf("Free list after free\n");
+          print_free_list();
+        }
+        return;
       }
-      if (DEBUG) printf("Linking %p to %p\n", freed, curr);
-      freed->next = curr;
-      assert(freed < curr);
-      if (DEBUG) {
-        printf("Free list after freeing\n");
-        //print_free_list();
-      }
-      coalesce();
-      attempt_to_free_pages();
-      return;
     }
     prev = curr;
     curr = curr->next;
@@ -201,7 +224,11 @@ coalesce()
       curr->size += ((header_t*)(curr->next))->size + sizeof(header_t);
       curr->next =  ((header_t*)(curr->next))->next;
       assert(curr->size <= (PAGESIZE - sizeof(header_t) - sizeof(void*)));
-      if (DEBUG) printf("Coalesce has been made\n");
+      if (DEBUG) {
+        printf("Free list after coalesce\n");
+        print_free_list();
+      }
+
       if (BASEADDR(curr) == BASEADDR(curr->next)) assert((void*)curr < (void*)curr->next || curr->next == NULL);
     } else {
       curr = curr->next;
@@ -212,11 +239,16 @@ coalesce()
 void
 attempt_to_free_pages()
 {
+  if (get_head() == NULL) {
+    if (DEBUG) printf("Freeing storage page\n");
+    free_page(entry);
+    entry = NULL;
+    return;
+  }
   header_t *curr, *prev;
   kma_page_t *page;
   prev = NULL;
   curr = get_head();
-  if (curr == NULL) free_page(entry);
   while (curr != NULL) {
     //printf("%p has %d bytes available\n", BASEADDR(curr), curr->size);
     if (curr->size == PAGESIZE - sizeof(header_t) - sizeof(void*)) {
@@ -224,9 +256,10 @@ attempt_to_free_pages()
       if (curr == get_head()) {
         page = *((kma_page_t**)(BASEADDR(curr)));
         move_head((header_t**)&(curr->next));
-        if (DEBUG) printf("Freeing the first page: %p\n", page);
+        if (DEBUG) printf("Freeing page that was the start of the list, %p\n", curr);
         free_page(page);
         attempt_to_free_pages();
+        return;
       } else {
         if (DEBUG) printf("Freeing the a page from the list\n");
         assert(prev != NULL);
@@ -234,6 +267,7 @@ attempt_to_free_pages()
         prev->next = curr->next;
         free_page(page);
         attempt_to_free_pages();
+        return;
       }
     }
     prev = curr;
@@ -246,7 +280,7 @@ print_free_list()
 {
   header_t *curr = get_head();
   while (curr != NULL) {
-    printf("%p - <%d, %p>\n", curr, curr->size, curr->next);
+    printf("PAGE: %p, %d - <%d, %p>\n", BASEADDR(curr),(int)((void*)curr - BASEADDR(curr)), curr->size, curr->next);
     curr = curr->next;
   }
 }
