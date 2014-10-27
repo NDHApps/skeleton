@@ -86,7 +86,7 @@ void*
 kma_malloc(kma_size_t size)
 {
   if (DEBUG) {
-    printf("\n    ---ALLOCATE %d---   \n", size);
+    printf("\n    ---POALLOCATE %d---   \n", size);
     printf("Free list before allocation:\n");
     //print_free_list();
   }
