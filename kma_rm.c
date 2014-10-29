@@ -79,7 +79,7 @@ header_t* get_head()
 
 void move_head(header_t** dest)
 {
-  memcpy(BASEADDR(entry->ptr), dest, sizeof(header_t**));
+  memcpy(BASEADDR(entry->ptr), dest, sizeof(header_t*));
 }
 
 void*
@@ -174,7 +174,9 @@ kma_free(void* ptr, kma_size_t size)
     if (DEBUG) printf("Free list before free\n");
     print_free_list();
   }
-  header_t *freed, *curr, *prev;
+  header_t *freed, *curr;
+  header_t *prev = NULL;
+
   freed = ptr - sizeof(header_t);
   freed->size = size;
   if (DEBUG) printf("Freeing: %p - <%d, %p>\n", freed, freed->size, freed->next);
