@@ -1,0 +1,30 @@
+## Resource Map
+
+For the resource map, we implemented a linked list of headers at the beginning
+of each free sector of memory in a page.  In addition, page has a section at its
+start the address of the kma_page_t to which it belongs.  This makes freeing a
+page once it is empty simply a matter of calling (where node some address in the
+page):
+
+```
+free_page(*(kma_page_t**)BASEADDR(node));
+```
+
+When a segment is freed, in order to place it appropriately in the linked list,
+we iterate through the list looking for the appropriate place to put this new
+header.  This ensures that the linked list stays in increasing order of address.
+One wrinkle we encountered, though, forced us to add an additional check that
+the freed segment's header be placed on the same page that is was freed from.
+
+Coalescing happens upon each free operation, and consists of a simple loop that
+iterates the linked list, checks if any headers size, plus it's address, is
+equal to the next headers address, and if so simply links the header to the
+following header (skipping the unnecessary one).  If this happens, instead of
+moving to the next node, we try the algorithm again with the current node, in
+case further coalesces can be made.
+
+The head of the list (a pointer to the first header) is stored on an specially
+dedicated page.  This is definitely wasteful, but it also the easiest to
+implement, and only adds a constant size and runtime overhead. Other approaches
+were looked into but the code changes required did not justify their effort (for
+example, modifying the ptr attribute of the global kma_page_t struct).
