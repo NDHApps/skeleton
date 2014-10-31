@@ -297,12 +297,12 @@ void update_bitmap(void* ptr, kma_size_t size, int mem_status) {
 
 
 int coalesce(void* ptr, int size) {
-
+    
     freelist_t* list = (freelist_t*)(g_page->ptr + sizeof(page_t));
     if (2*size > list->bufsizes[9]) {
         return size;
     }
-
+    
     page_t* page = (page_t*)(g_page->ptr);
     while (ptr < ((void*)page+sizeof(page_t)+sizeof(freelist_t)) || ptr > (void*)page+PAGESIZE-sizeof(kma_page_t)) {
         page = (page_t*)(page->next);
@@ -311,7 +311,7 @@ int coalesce(void* ptr, int size) {
     
     void* oldptr;
     int startbit;
-
+    
     if ((offset/size) % 2 == 0) {
         startbit = offset/16 + size/16;
         oldptr = ptr + size;
@@ -332,7 +332,7 @@ int coalesce(void* ptr, int size) {
         if (page->bitmap[j] & (1 << (7 - k)))
             return size;
     }
-
+    
     for (i=0; list->bufsizes[i] != size; i++) {}
     void* curptr = list->lists[i];
     
