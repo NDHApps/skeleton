@@ -28,3 +28,12 @@ dedicated page.  This is definitely wasteful, but it also the easiest to
 implement, and only adds a constant size and runtime overhead. Other approaches
 were looked into but the code changes required did not justify their effort (for
 example, modifying the ptr attribute of the global kma_page_t struct).
+
+
+## Buddy System
+
+We implemented buddy system using bitmaps to keep track of free buffers within each page. In addition we maintain a linked list to keep track of all free memory sectors.
+
+This implementation attempts to coalesce adjacent free regions whenever possible to create larger free regions that can then be split and allocated again on request. However, this also introduces a food deal of overhead because it must check the bitmap every time a block is freed to check if it needs to do so. For this reason the buddy system can be inefficient if it receives a lot of alternating kma_alloc and kma_free requests. 
+
+Because blocks are allocated in powers of 2, the buddy system algorithm can also be less than optimal if requested block sizes are only slightly larger than powers of 2.

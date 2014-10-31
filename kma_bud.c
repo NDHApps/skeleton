@@ -33,7 +33,6 @@
  ***************************************************************************/
 #ifdef KMA_BUD
 #define __KMA_IMPL__
-#define DEBUG 0
 
 /************System include***********************************************/
 #include <assert.h>
@@ -57,7 +56,7 @@ typedef struct
     int bufsizes[10];
     void* lists[10];
     
-} freelist_t;
+} free_list_t;
 
 typedef struct
 {
@@ -94,28 +93,30 @@ kma_malloc(kma_size_t size)
     void* address;
     
     // ensure that there is enough space
-    if (size + sizeof(page_t) + sizeof(kma_page_t) + sizeof(freelist_t) > PAGESIZE) {
+    if (size + sizeof(page_t) + sizeof(kma_page_t) + sizeof(free_list_t) > PAGESIZE) {
         
         //allocate a new page
         kma_page_t* page = get_page();
         *((kma_page_t**)page->ptr) = page;
         if ((size + sizeof(kma_page_t*)) > page->size)
         {
-            //
+            // if size is still larger than size of page, free the page and return null
             free_page(page);
             return NULL;
         }
         return page->ptr + sizeof(kma_page_t*);
     }
     
+    // get the address of free block
     address = get_free_block(size);
     
+    // if the address is not null, return the address
     if (address != NULL) {
         update_bitmap(address-sizeof(int), *((int*)(address-sizeof(int))), 1);
         return address;
     }
     
-    //
+    // if free space still has not been found, allocate a new page
     alloc_page();
     
     address = get_free_block(size);
@@ -129,8 +130,8 @@ kma_malloc(kma_size_t size)
 void
 kma_free(void* ptr, kma_size_t size)
 {
-    freelist_t* list = (freelist_t *)(g_page->ptr + sizeof(page_t));
-    if (size > PAGESIZE-sizeof(page_t)-sizeof(kma_page_t)-sizeof(freelist_t)-sizeof(int)) {
+    free_list_t* list = (free_list_t *)(g_page->ptr + sizeof(page_t));
+    if (size > PAGESIZE-sizeof(page_t)-sizeof(kma_page_t)-sizeof(free_list_t)-sizeof(int)) {
         kma_page_t* page = *((kma_page_t**)(ptr - sizeof(kma_page_t*)));
         free_page(page);
         return;
@@ -166,7 +167,7 @@ free_kma_pages()
 void*
 get_free_block(kma_size_t size)
 {
-    freelist_t* list = (freelist_t*)(g_page->ptr + sizeof(page_t));
+    free_list_t* list = (free_list_t*)(g_page->ptr + sizeof(page_t));
     if (size > list->bufsizes[9]) {
         return NULL;
     }
@@ -207,9 +208,10 @@ get_free_block(kma_size_t size)
 
 void init_page()
 {
-    if (DEBUG)
-        printf("Initializing page\n");
-    int space = (unsigned int)PAGESIZE - sizeof(kma_page_t) - sizeof(page_t) - sizeof(freelist_t);
+    // calculate the available space
+    int space = (unsigned int)PAGESIZE - sizeof(kma_page_t) - sizeof(page_t) - sizeof(free_list_t);
+    
+    // get a new page
     kma_page_t* new_kma_page = get_page();
     page_t* new_page = (page_t *)(new_kma_page->ptr);
     
@@ -217,7 +219,7 @@ void init_page()
     new_page->next = NULL;
     g_page = new_kma_page;
     
-    freelist_t* list = (freelist_t*)((void *)new_page + sizeof(page_t));
+    free_list_t* list = (free_list_t*)((void *)new_page + sizeof(page_t));
     list->allocs = 0;
     
     int i;
@@ -231,13 +233,15 @@ void init_page()
         new_page->bitmap[i] = 0;
     }
     list->bufsizes[9] = space;
-    void* nextaddr = (void*)new_page + sizeof(page_t) + sizeof(freelist_t);
+    void* nextaddr = (void*)new_page + sizeof(page_t) + sizeof(free_list_t);
+    
+    // add the page to free list
     add_to_free_list(nextaddr,list->bufsizes[9]);
 }
 
 void alloc_page()
 {
-    int space = (unsigned int)PAGESIZE - sizeof(kma_page_t) - sizeof(page_t) - sizeof(freelist_t);
+    int space = (unsigned int)PAGESIZE - sizeof(kma_page_t) - sizeof(page_t) - sizeof(free_list_t);
     
     kma_page_t* new_kma_page = get_page();
     page_t* new_page = (page_t *)(new_kma_page->ptr);
@@ -256,14 +260,14 @@ void alloc_page()
     }
     old_page->next = new_page;
     
-    // don't really need to add sizeof(freelist_t), but max. buffer size will be bufsizes[9] regardless so might as well do it for consistency
-    void* startAddr = (void*)(new_page) + sizeof(page_t) + sizeof(freelist_t);
+    // don't really need to add sizeof(free_list_t), but max. buffer size will be bufsizes[9] regardless so might as well do it for consistency
+    void* startAddr = (void*)(new_page) + sizeof(page_t) + sizeof(free_list_t);
     add_to_free_list(startAddr,space);
 }
 
 void add_to_free_list (void* addr, int size) // size INCLUDES head ptr
 {
-    freelist_t* list = (freelist_t*)(g_page->ptr + sizeof(page_t));
+    free_list_t* list = (free_list_t*)(g_page->ptr + sizeof(page_t));
     int i;
     for (i = 0; i < 10; i ++) {
         if (size == list->bufsizes[i]) {
@@ -281,7 +285,7 @@ void update_bitmap(void* ptr, kma_size_t size, int mem_status) {
     while (ptr < (void*)page || ptr > (void*)page+PAGESIZE-sizeof(kma_page_t)) {
         page = (page_t*)(page->next);
     }
-    int offset = (ptr - (void*)page) - sizeof(page_t) - sizeof(freelist_t);
+    int offset = (ptr - (void*)page) - sizeof(page_t) - sizeof(free_list_t);
     int i;
     if (mem_status == 1) {
         for (i = offset/16; i < offset/16 + size/16; i++) {
@@ -298,16 +302,16 @@ void update_bitmap(void* ptr, kma_size_t size, int mem_status) {
 
 int coalesce(void* ptr, int size) {
     
-    freelist_t* list = (freelist_t*)(g_page->ptr + sizeof(page_t));
+    free_list_t* list = (free_list_t*)(g_page->ptr + sizeof(page_t));
     if (2*size > list->bufsizes[9]) {
         return size;
     }
     
     page_t* page = (page_t*)(g_page->ptr);
-    while (ptr < ((void*)page+sizeof(page_t)+sizeof(freelist_t)) || ptr > (void*)page+PAGESIZE-sizeof(kma_page_t)) {
+    while (ptr < ((void*)page+sizeof(page_t)+sizeof(free_list_t)) || ptr > (void*)page+PAGESIZE-sizeof(kma_page_t)) {
         page = (page_t*)(page->next);
     }
-    int offset = (ptr - (void*)page) - sizeof(page_t) - sizeof(freelist_t);
+    int offset = (ptr - (void*)page) - sizeof(page_t) - sizeof(free_list_t);
     
     void* oldptr;
     int startbit;
@@ -336,7 +340,7 @@ int coalesce(void* ptr, int size) {
     for (i=0; list->bufsizes[i] != size; i++) {}
     void* curptr = list->lists[i];
     
-    while (curptr != NULL && curptr > ((void*)page+sizeof(page_t)+sizeof(freelist_t)) && curptr < (void*)page+PAGESIZE-sizeof(kma_page_t)) {
+    while (curptr != NULL && curptr > ((void*)page+sizeof(page_t)+sizeof(free_list_t)) && curptr < (void*)page+PAGESIZE-sizeof(kma_page_t)) {
         
         if (*((void**)curptr) == oldptr) {
             *((void**)curptr) = *((void**)oldptr);
